@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- Ensures proper scaling and prevents zooming on mobile touch devices -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Live Camera AutoCAD - Flange Coupling</title>
+  
+  <!-- Load p5.js Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #212830; /* AutoCAD dark fallback */
+      touch-action: none; /* Prevents default browser swiping/scrolling */
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+<script>
+// ========================================================
+// FLANGE COUPLING - INTERACTIVE AUTOCAD HTML5 (p5.js)
+// ========================================================
+
+let sf;
+let phase = 0; 
+let actionTimer = 0;
+let worldX, worldY;
+
+let r1, r2, r3, r4, r5;
+let videoCapture;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  
+  // Prefer the back (environment) camera on mobile phones
+  let constraints = {
+    video: {
+      facingMode: "environment" 
+    },
+    audio: false
+  };
+  videoCapture = createCapture(constraints);
+  videoCapture.hide(); // Hide raw HTML video element, we will draw it to canvas
+  
+  // Calculate scale factor to give plenty of room on the sides
+  sf = min(width / 600.0, height / 400.0);
+  
+  // Initialize the 5 interactive rectangles
+  r1 = new CadRect("R1", 160, 100, -290, 40,   -80, -50, color(255, 100, 100), "MID", 0, 0);
+  r2 = new CadRect("R2", 210, 50,    80, 80,  -105, -25, color(100, 255, 100), "MID", 0, 0);
+  r3 = new CadRect("R3", 46,  58,  -230, -30,  -46,  50, color(100, 100, 255), "END", 0, 50);
+  r4 = new CadRect("R4", 85,  16,   150, 10,     0,  -8, color(255, 255, 100), "INT", 0, -8);
+  r5 = new CadRect("R5", 85,  10,  -280, -100, -85,  20, color(255, 100, 255), "END", -85, 20);
+}
+
+function draw() {
+  // Draw Live Camera Background
+  if (videoCapture.loadedmetadata) {
+    // Fill the screen with the camera, cropping edges if aspect ratio differs
+    let vw = videoCapture.width;
+    let vh = videoCapture.height;
+    let vScale = max(width / vw, height / vh);
+    push();
+    imageMode(CENTER);
+    translate(width/2, height/2);
+    image(videoCapture, 0, 0, vw * vScale, vh * vScale);
+    pop();
+  } else {
+    background(33, 40, 48); // Fallback color while loading camera
+  }
+  
+  // Add a semi-transparent dark overlay to make bright CAD lines visible against the real world
+  background(33, 40, 48, 170); // The 170 is alpha out of 255
+  
+  // Map mouse/touch to world coordinates
+  worldX = (mouseX - width / 2.0) / sf;
+  worldY = -(mouseY - height / 2.0) / sf; // Inverted because of scale(sf, -sf)
+  
+  // Setup coordinate system for drawing
+  push();
+  translate(width / 2, height / 2);
+  scale(sf, -sf); // standard CAD coords (+Y is UP)
+  
+  drawCenterlines();
+  
+  // --- INTERACTIVE ASSEMBLY (Phases 0 - 4) ---
+  if (phase < 7) {
+    r1.update(0); r1.draw();
+    r2.update(1); r2.draw();
+    r3.update(2); r3.draw();
+    r4.update(3); r4.draw();
+    r5.update(4); r5.draw();
+  }
+  
+  // --- AUTOMATED SEQUENCE (Phases 5 - 9) ---
+  if (phase >= 5 && phase < 9) {
+    if (millis() - actionTimer > 3000) { // Wait 3 seconds per automated phase
+      phase++;
+      actionTimer = millis();
+    }
+  }
+  
+  if (phase >= 5 && phase < 7) drawMirrorRight();
+  if (phase >= 6 && phase < 7) drawMirrorBottom();
+  
+  // Phase 7 & 8: EXPLODE, TRIM, Finalize & Hatch
+  if (phase >= 7) {
+    // In original code, background was cleared here. We omit it to keep the AR camera visible!
+    drawCenterlines();
+    drawFinalTrimmedCoupling(); 
+  }
+  if (phase >= 8) drawHatching();
+  
+  // Phase 9: LED Blinking Base Rectangles overlay
+  if (phase >= 9) drawLEDBlinkingRects(millis());
+  
+  // Draw Interactive AutoCAD Crosshairs
+  drawAutoCADCursor();
+  
+  pop(); // End coordinate transforms
+  
+  // Draw UI Command Line
+  drawAutoCAD_UI();
+}
+
+function mousePressed() {
+  handleInput();
+}
+
+function touchStarted() {
+  handleInput();
+  return false; // Prevent default touch behavior (scrolling)
+}
+
+function handleInput() {
+  // Check which rectangle the user is clicking based on the current phase
+  if (phase === 0) r1.checkClick(worldX, worldY);
+  else if (phase === 1) r2.checkClick(worldX, worldY);
+  else if (phase === 2) r3.checkClick(worldX, worldY);
+  else if (phase === 3) r4.checkClick(worldX, worldY);
+  else if (phase === 4) r5.checkClick(worldX, worldY);
+  else if (phase >= 5) {
+     phase++; // Tap to skip automated phases
+     actionTimer = millis();
+  }
+}
+
+// Adjust canvas when browser is resized/device is rotated
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  sf = min(width / 600.0, height / 400.0);
+}
+
+// ========================================================
+// INTERACTIVE RECTANGLE CLASS
+// ========================================================
+class CadRect {
+  constructor(n, w, h, px, py, tx, ty, c, sType, sX, sY) {
+    this.name = n; this.w = w; this.h = h;
+    this.x = px; this.y = py;
+    this.targetX = tx; this.targetY = ty;
+    this.c = c;
+    this.snapType = sType; this.snapX = sX; this.snapY = sY;
+    
+    this.moving = false;
+    this.placed = false;
+  }
+  
+  update(triggerPhase) {
+    if (this.moving) {
+      this.x = lerp(this.x, this.targetX, 0.08);
+      this.y = lerp(this.y, this.targetY, 0.08);
+      
+      // Snap to final position when close
+      if (dist(this.x, this.y, this.targetX, this.targetY) < 1.0) {
+        this.x = this.targetX; this.y = this.targetY;
+        this.moving = false;
+        this.placed = true;
+        phase = triggerPhase + 1; // Advance Global Phase
+        if (phase === 5) actionTimer = millis(); // Start auto-timer
+      }
+    }
+  }
+  
+  draw() {
+    push();
+    rectMode(CORNER);
+    stroke(this.c); 
+    strokeWeight(1.5 / sf);
+    fill(red(this.c), green(this.c), blue(this.c), (this.moving || this.placed) ? 50 : 20); 
+    rect(this.x, this.y, this.w, this.h);
+    
+    // Draw Label if it is parked on the side
+    if (!this.placed && !this.moving) {
+      push();
+      translate(this.x + this.w/2, this.y + this.h/2);
+      scale(1, -1); // Flip text right-side up
+      fill(255); textSize(16 / sf); textAlign(CENTER, CENTER);
+      text(this.name, 0, 0);
+      pop();
+    }
+    
+    // Draw OSNAP target if this rectangle is currently moving
+    if (this.moving) drawOsnapMarker(this.snapX, this.snapY, this.snapType);
+    pop();
+  }
+  
+  checkClick(mx, my) {
+    if (!this.placed && !this.moving && mx >= this.x && mx <= this.x + this.w && my >= this.y && my <= this.y + this.h) {
+      this.moving = true;
+    }
+  }
+}
+
+// ========================================================
+// CURSOR & OSNAP
+// ========================================================
+function drawAutoCADCursor() {
+  if (phase >= 7) return; // Hide cursor for final view
+  
+  stroke(255, 200); strokeWeight(1 / sf); noFill();
+  line(worldX - 30/sf, worldY, worldX + 30/sf, worldY);
+  line(worldX, worldY - 30/sf, worldX, worldY + 30/sf);
+  rectMode(CENTER);
+  rect(worldX, worldY, 8/sf, 8/sf); // Pickbox
+}
+
+function drawOsnapMarker(x, y, type) {
+  stroke(0, 255, 0); // AutoCAD green
+  strokeWeight(2.5 / sf); noFill();
+  let s = 6 / sf;
+  
+  if (type === "MID") triangle(x, y - s, x - s, y + s, x + s, y + s);
+  else if (type === "END") { rectMode(CENTER); rect(x, y, s*2, s*2); }
+  else if (type === "INT") { line(x - s, y - s, x + s, y + s); line(x - s, y + s, x + s, y - s); }
+}
+
+// ========================================================
+// GEOMETRY & AUTOMATED PHASES
+// ========================================================
+function drawCenterlines() {
+  stroke(180); strokeWeight(1 / sf);
+  line(-170, 0, 170, 0); // L4
+  line(0, -150, 0, 150); // L2
+}
+
+function drawMirrorRight() {
+  stroke(255, 255, 0, map(sin(millis()*0.01),-1,1,50,255)); 
+  strokeWeight(2 / sf); line(0, -150, 0, 150); // Highlight L2
+  drawCadRect(0, 50, 46, 58, color(100, 100, 255)); 
+}
+
+function drawMirrorBottom() {
+  stroke(255, 255, 0, map(sin(millis()*0.01),-1,1,50,255)); 
+  strokeWeight(2 / sf); line(-170, 0, 170, 0); // Highlight L4
+  drawCadRect(-46, -108, 46, 58, color(100, 100, 255)); 
+  drawCadRect(0, -108, 46, 58, color(100, 100, 255));   
+}
+
+function drawFinalTrimmedCoupling() {
+  push(); rectMode(CORNER); stroke(255);
+  // Shafts
+  fill(160); strokeWeight(1.5 / sf);
+  rect(-105, -25, 105, 50); rect(0, -25, 105, 50);
+  fill(33, 40, 48); noStroke(); ellipse(-105, 0, 10, 50); ellipse(105, 0, 10, 50);
+  stroke(255); noFill();
+  arc(-105, 0, 10, 50, HALF_PI, PI + HALF_PI); arc(105, 0, 10, 50, -HALF_PI, HALF_PI);
+  // Keys
+  fill(220, 220, 100); rect(-85, 20, 85, 10);
+  noFill(); rect(0, -8, 85, 16); arc(85, 0, 16, 16, -HALF_PI, HALF_PI);
+  // Flanges Bottom
+  fill(110); strokeWeight(1.5 / sf);
+  rect(-80, -50, 80, 25);  rect(-46, -108, 46, 58); 
+  rect(0, -50, 80, 25);    rect(0, -108, 46, 58);   
+  // Flanges Top
+  fill(110);
+  rect(-80, 25, 80, 25);   rect(-46, 50, 46, 58);    
+  rect(0, 25, 80, 25);     rect(0, 50, 46, 58);      
+  // Spigot offset detailing
+  strokeWeight(2.5 / sf);
+  line(0, -108, 0, 25); line(-6, 25, -6, 50); line(-6, 50, 0, 50); line(0, 50, 0, 108);
+  // Bolts
+  fill(140); stroke(255); strokeWeight(1.5 / sf);
+  rect(-46, 71, 92, 16);  rect(-60, 67, 14, 24);  rect(46, 67, 14, 24);
+  line(-46, 71, -46, 87); line(46, 71, 46, 87);
+  rect(-46, -87, 92, 16); rect(-60, -91, 14, 24); rect(46, -91, 14, 24);
+  line(-46, -87, -46, -71); line(46, -87, 46, -71);
+  pop();
+}
+
+function drawHatching() {
+  hatchedRect(-80, 25, 80, 25, 5, true); hatchedRect(-46, 50, 46, 58, 5, true);
+  hatchedRect(0, 25, 80, 25, 5, false); hatchedRect(0, 50, 46, 58, 5, false);
+}
+
+function drawLEDBlinkingRects(elapsed) {
+  let alphaVal = map(sin(elapsed * 0.008), -1, 1, 50, 255);
+  push(); rectMode(CORNER); strokeWeight(4 / sf); noFill();
+  stroke(255, 50, 50, alphaVal);   rect(-80, -50, 160, 100); 
+  stroke(50, 255, 50, alphaVal);   rect(-105, -25, 210, 50); 
+  stroke(100, 100, 255, alphaVal); rect(-46, 50, 46, 58);    
+  stroke(255, 255, 50, alphaVal);  rect(0, -8, 85, 16);      
+  stroke(255, 50, 255, alphaVal);  rect(-85, 20, 85, 10);    
+  pop();
+}
+
+// ========================================================
+// UTILITIES
+// ========================================================
+function drawCadRect(x, y, w, h, c) {
+  push(); rectMode(CORNER); stroke(c); strokeWeight(1.5 / sf);
+  fill(red(c), green(c), blue(c), 50); rect(x, y, w, h); pop();
+}
+
+function drawAutoCAD_UI() {
+  push();
+  resetMatrix(); // Reset transformations to draw UI on screen coords
+  
+  // UI Panel Background
+  fill(25, 30, 35, 200); stroke(100); strokeWeight(2);
+  let uiHeight = min(120, height * 0.2); // Responsive height
+  rect(0, height - uiHeight, width, uiHeight);
+  
+  textAlign(LEFT, CENTER); 
+  textSize(min(20, width/28)); // Responsive text size
+  fill(255, 200, 100);
+  
+  let cmd = "";
+  switch(phase) {
+    case 0: cmd = "Command: MOVE\nACTION: Click/Tap R1 (Red, Left) to snap it to L2 MIDPOINT."; break;
+    case 1: cmd = "Command: MOVE\nACTION: Click/Tap R2 (Green, Right) to snap it to L2 MIDPOINT."; break;
+    case 2: cmd = "Command: MOVE\nACTION: Click/Tap R3 (Blue, Left) to snap it to R1 ENDPOINT."; break;
+    case 3: cmd = "Command: MOVE\nACTION: Click/Tap R4 (Yellow, Right) to snap it to INTERSECTION."; break;
+    case 4: cmd = "Command: MOVE\nACTION: Click/Tap R5 (Pink, Left) to place Keyway."; break;
+    case 5: cmd = "Command: MIRROR\nAuto-mirroring R3 across vertical axis L2..."; fill(200); break;
+    case 6: cmd = "Command: MIRROR\nAuto-mirroring top Flanges across horizontal axis L4..."; fill(200); break;
+    case 7: cmd = "Command: EXPLODE & TRIM\nFinalizing outline geometry and adding bolts..."; fill(200); break;
+    case 8: cmd = "Command: BHATCH\nApplying ANSI31 diagonal pattern to sectioned halves..."; fill(200); break;
+    default: cmd = "CONSTRUCTION COMPLETE.\nHigh-vis LED bounding boxes activated."; fill(50, 255, 50); break;
+  }
+  
+  text(cmd, 20, height - (uiHeight / 2));
+  pop();
+}
+
+function hatchedRect(rx, ry, rw, rh, spacing, posSlope) {
+  let minX = rx, maxX = rx + rw, minY = ry, maxY = ry + rh;
+  stroke(220); strokeWeight(1 / sf);
+  if (posSlope) {
+    for (let d = -rh; d <= rw; d += spacing) {
+      clipAndDraw(rx + d, ry, rx + d + rh, ry + rh, minX, maxX, minY, maxY);
+    }
+  } else {
+    for (let d = 0; d <= rw + rh; d += spacing) {
+      clipAndDraw(rx + d, ry, rx + d - rh, ry + rh, minX, maxX, minY, maxY);
+    }
+  }
+}
+
+function clipAndDraw(x0, y0, x1, y1, minX, maxX, minY, maxY) {
+  let t0 = 0.0, t1 = 1.0, dx = x1 - x0, dy = y1 - y0;
+  let p = [-dx, dx, -dy, dy], q = [x0 - minX, maxX - x0, y0 - minY, maxY - y0];
+  
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0 && q[i] < 0) return; 
+    if (p[i] !== 0) {
+      let t = q[i] / p[i];
+      if (p[i] < 0) { if (t > t1) return; if (t > t0) t0 = t; } 
+      else { if (t < t0) return; if (t < t1) t1 = t; }
+    }
+  }
+  if (t0 <= t1) line(x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy);
+}
+
+</script>
+</body>
+</html>
