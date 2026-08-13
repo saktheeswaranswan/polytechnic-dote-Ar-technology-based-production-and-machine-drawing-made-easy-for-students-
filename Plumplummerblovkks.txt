@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Plummer Block Assembly Simulation</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050505;
+            overflow: hidden; /* Prevent scrolling */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #ui-container {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(20, 20, 20, 0.85);
+            padding: 15px 25px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.2);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            align-items: center;
+            width: 90%;
+            max-width: 600px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        #stage-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #00e5ff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            text-align: center;
+        }
+        .controls-row {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            flex: 1;
+        }
+        button {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+        }
+        button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: #00e5ff;
+        }
+        button.active {
+            background: #00e5ff;
+            color: #000;
+            border-color: #00e5ff;
+        }
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+        #btn-reset {
+            background: #ff3366;
+            border-color: #ff3366;
+            color: white;
+        }
+        #btn-reset:hover {
+            background: #ff5588;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="simCanvas"></canvas>
+
+    <div id="ui-container">
+        <div id="stage-title">Part 1: Body Construction</div>
+        <div class="controls-row">
+            <div class="btn-group">
+                <button class="speed-btn" data-speed="0.5" onclick="setSpeed(0.5)">0.5x</button>
+                <button class="speed-btn active" data-speed="1" onclick="setSpeed(1)">1x</button>
+                <button class="speed-btn" data-speed="2" onclick="setSpeed(2)">2x</button>
+                <button class="speed-btn" data-speed="4" onclick="setSpeed(4)">4x</button>
+            </div>
+            <div class="btn-group">
+                <button id="btn-prev" onclick="changeStage(-1)">Previous</button>
+                <button id="btn-next" onclick="changeStage(1)">Next Screen</button>
+                <button id="btn-reset" onclick="setStage(0)" style="display: none;">Back to Beginning</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- PLUMMER BLOCK ASSEMBLY SIMULATION ---
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Master Data Arrays
+        let allPaths = [];
+        let hatchPaths = [];
+        let stagePaths = [];
+
+        // App States
+        let currentStage = 0; 
+        // 0: Body, 1: Cap, 2: Brasses, 3: Bolts, 4: Assembly+Hatch+Table
+        
+        let subState = 0; 
+        // For Stage 4 -> 0: Assemble, 1: Hatch, 2: Table & Balloons
+
+        // Animation Progress
+        let currentPath = 0;
+        let laserProgress = 0;
+        let baseLaserSpeed = 100.0;
+        let speedMult = 1.0;
+        let hueValue = 0;
+        let assemblyProgress = 0;
+        let hatchProgress = 0;
+
+        // Group Definitions for Exploded View
+        // 0: Body, 1: Cap, 2: Brasses, 3: Bolt L, 4: Bolt R
+        const startDx = [0, 0, 180, -150, 150]; 
+        const startDy = [0, -180, -100, -80, -80]; 
+        let groupDx = [0,0,0,0,0];
+        let groupDy = [0,0,0,0,0];
+
+        let scale, centerX, baseY;
+
+        const stageNames = [
+            "Part 1: Body Construction",
+            "Part 2: Cap Construction",
+            "Part 3: Brasses Construction",
+            "Part 4: Bolts & Nuts Construction",
+            "Final: Assembly & Bill of Materials"
+        ];
+
+        // --- PATH CLASS ---
+        class LinePath {
+            constructor(x1, y1, x2, y2, group, isHatch) {
+                this.x1 = x1; this.y1 = y1;
+                this.x2 = x2; this.y2 = y2;
+                this.group = group;
+                this.isHatch = isHatch;
+                
+                // Dynamic length calculated on setup
+                this.len = 0; 
+            }
+
+            calcLen() {
+                let mx1 = mapX(this.x1), my1 = mapY(this.y1);
+                let mx2 = mapX(this.x2), my2 = mapY(this.y2);
+                this.len = Math.hypot(mx2 - mx1, my2 - my1);
+            }
+
+            display(gx, gy) {
+                ctx.strokeStyle = this.isHatch ? 'rgba(255, 255, 255, 0.35)' : 'rgba(255, 255, 255, 1.0)';
+                ctx.lineWidth = this.isHatch ? 1.5 : 2.5 * (scale / 3.0);
+                
+                let mx1 = mapX(this.x1) + gx[this.group] * scale;
+                let my1 = mapY(this.y1) + gy[this.group] * scale;
+                let mx2 = mapX(this.x2) + gx[this.group] * scale;
+                let my2 = mapY(this.y2) + gy[this.group] * scale;
+                
+                ctx.beginPath();
+                ctx.moveTo(mx1, my1);
+                ctx.lineTo(mx2, my2);
+                ctx.stroke();
+            }
+
+            displayPartial(gx, gy, t) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 1.0)';
+                ctx.lineWidth = 2.5 * (scale / 3.0);
+                
+                let mx1 = mapX(this.x1) + gx[this.group] * scale;
+                let my1 = mapY(this.y1) + gy[this.group] * scale;
+                let mx2 = mapX(this.x2) + gx[this.group] * scale;
+                let my2 = mapY(this.y2) + gy[this.group] * scale;
+                
+                let cx = mx1 + (mx2 - mx1) * t;
+                let cy = my1 + (my2 - my1) * t;
+                
+                ctx.beginPath();
+                ctx.moveTo(mx1, my1);
+                ctx.lineTo(cx, cy);
+                ctx.stroke();
+            }
+        }
+
+        // --- MATH & MAPPING ---
+        function mapX(x) { return centerX + (x * scale); }
+        function mapY(y) { return baseY - (y * scale); } 
+        function lerp(start, end, amt) { return (1 - amt) * start + amt * end; }
+
+        // --- GEOMETRY BUILDING ---
+        function addLine(x1, y1, x2, y2, group) {
+            allPaths.push(new LinePath(x1, y1, x2, y2, group, false));
+        }
+
+        function addHatch(x1, y1, x2, y2) {
+            hatchPaths.push(new LinePath(x1, y1, x2, y2, 0, true)); 
+        }
+
+        function addSymLine(x1, y1, x2, y2, group) {
+            addLine(x1, y1, x2, y2, group);
+            addLine(-x1, y1, -x2, y2, group);
+        }
+
+        function addArc(cx, cy, r, startAng, endAng, group) {
+            let segments = 25; 
+            let angleStep = (endAng - startAng) / segments;
+            let px = cx + r * Math.cos(startAng);
+            let py = cy + r * Math.sin(startAng);
+            for (let i = 1; i <= segments; i++) {
+                let angle = startAng + i * angleStep;
+                let nx = cx + r * Math.cos(angle);
+                let ny = cy + r * Math.sin(angle);
+                addLine(px, py, nx, ny, group);
+                px = nx; py = ny;
+            }
+        }
+
+        function addSymArc(cx, cy, r, startAng, endAng, group) {
+            addArc(cx, cy, r, startAng, endAng, group);
+            let startAngM = Math.PI - endAng;
+            let endAngM = Math.PI - startAng;
+            addArc(cx, cy, r, startAngM, endAngM, group);
+        }
+
+        function buildGeometry() {
+            allPaths = [];
+            hatchPaths = [];
+            
+            // GROUP 0: BODY 
+            addSymLine(-104, 0, 104, 0, 0); 
+            addSymLine(104, 0, 104, 14, 0);
+            addSymLine(104, 14, 59, 14, 0);
+            addSymLine(59, 14, 59, 68, 0);
+            addSymLine(59, 68, 33, 68, 0);
+            addSymLine(33, 68, 33, 52, 0);
+            addSymLine(33, 52, 24, 52, 0);
+            addSymArc(0, 48, 24, 0, Math.PI/2, 0); 
+            
+            // Bolt Holes in Body
+            addLine(-58, 0, -58, 14, 0);
+            addLine(-46, 0, -46, 14, 0);
+            addLine(46, 0, 46, 14, 0);
+            addLine(58, 0, 58, 14, 0);
+            
+            // GROUP 1: CAP 
+            addArc(0, 48, 48, Math.PI, Math.PI * 2, 1); 
+            addArc(0, 48, 24, Math.PI, Math.PI * 2, 1); 
+            addSymLine(48, 48, 24, 48, 1); 
+            addSymLine(33, 48, 33, 58, 1); 
+            addSymLine(33, 58, 48, 58, 1);
+            
+            // Cap Bolt Holes
+            addLine(-58, 48, -58, 68, 1);
+            addLine(-46, 48, -46, 68, 1);
+            addLine(46, 48, 46, 68, 1);
+            addLine(58, 48, 58, 68, 1);
+
+            // GROUP 2: BRASSES 
+            addArc(0, 48, 32, 0, Math.PI * 2, 2); 
+            addArc(0, 48, 24, 0, Math.PI * 2, 2); 
+            
+            // GROUP 3: BOLT & NUTS (LEFT)
+            addLine(-58, -5, -58, 95, 3);
+            addLine(-46, -5, -46, 95, 3);
+            addLine(-58, -5, -46, -5, 3);
+            addLine(-64, 95, -40, 95, 3); 
+            addLine(-64, 107, -40, 107, 3); 
+            addLine(-64, 95, -64, 107, 3);
+            addLine(-40, 95, -40, 107, 3);
+            
+            // GROUP 4: BOLT & NUTS (RIGHT)
+            addLine(46, -5, 46, 95, 4);
+            addLine(58, -5, 58, 95, 4);
+            addLine(46, -5, 58, -5, 4);
+            addLine(40, 95, 64, 95, 4);
+            addLine(40, 107, 64, 107, 4);
+            addLine(40, 95, 40, 107, 4);
+            addLine(64, 95, 64, 107, 4);
+            
+            // SECTION HATCHING 
+            for(let y = 0; y < 100; y += 4) {
+                if(y > 0 && y < 14) addHatch(0, y, 100, y+10);      
+                if(y > 14 && y < 48) addHatch(24, y, 59, y+10);     
+                if(y > 48 && y < 96) addHatch(24, y, 48, y-10);     
+            }
+        }
+
+        // --- SETUP & RESIZE ---
+        function setup() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            scale = canvas.width / 380.0; 
+            if(scale > 4) scale = 4; // cap scale on ultra-wides
+
+            centerX = canvas.width / 2.0;
+            // Shift Y lower to make room for top elements when exploded
+            baseY = canvas.height - (canvas.height / 3.5); 
+
+            buildGeometry();
+
+            // Calculate exact pixel lengths for laser accuracy
+            allPaths.forEach(p => p.calcLen());
+            hatchPaths.forEach(p => p.calcLen());
+
+            setStage(currentStage); // apply current stage filters
+        }
+
+        window.addEventListener('resize', setup);
+
+        // --- STAGE & UI MANAGEMENT ---
+        function setSpeed(mult) {
+            speedMult = mult;
+            document.querySelectorAll('.speed-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (parseFloat(btn.dataset.speed) === mult) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        function changeStage(dir) {
+            setStage(currentStage + dir);
+        }
+
+        function setStage(s) {
+            if (s < 0) s = 0;
+            if (s > 4) s = 4;
+            currentStage = s;
+
+            // Update UI
+            document.getElementById('stage-title').innerText = stageNames[currentStage];
+            document.getElementById('btn-prev').disabled = (currentStage === 0);
+            
+            if (currentStage === 4) {
+                document.getElementById('btn-next').style.display = 'none';
+                document.getElementById('btn-reset').style.display = 'inline-block';
+            } else {
+                document.getElementById('btn-next').style.display = 'inline-block';
+                document.getElementById('btn-reset').style.display = 'none';
+            }
+
+            // Reset Animation Variables
+            currentPath = 0;
+            laserProgress = 0;
+            assemblyProgress = 0;
+            hatchProgress = 0;
+            subState = 0;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Configure Paths for current stage
+            if (currentStage === 0) {
+                stagePaths = allPaths.filter(p => p.group === 0);
+                groupDx = [0,0,0,0,0]; groupDy = [0,0,0,0,0]; // Centered
+            } else if (currentStage === 1) {
+                stagePaths = allPaths.filter(p => p.group === 1);
+                groupDx = [0,0,0,0,0]; groupDy = [0,0,0,0,0];
+            } else if (currentStage === 2) {
+                stagePaths = allPaths.filter(p => p.group === 2);
+                groupDx = [0,0,0,0,0]; groupDy = [0,0,0,0,0];
+            } else if (currentStage === 3) {
+                stagePaths = allPaths.filter(p => p.group === 3 || p.group === 4);
+                groupDx = [0,0,0,0,0]; groupDy = [0,0,0,0,0];
+            } else if (currentStage === 4) {
+                stagePaths = allPaths; // Draw everything
+                currentPath = stagePaths.length; // Skip laser drawing
+                // Start exploded
+                groupDx = [...startDx];
+                groupDy = [...startDy];
+            }
+        }
+
+        // --- DRAWING LOOP ---
+        function draw() {
+            // Apply motion blur effect
+            ctx.fillStyle = 'rgba(5, 5, 5, 0.3)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw completed paths for current stage
+            for (let i = 0; i < currentPath; i++) {
+                stagePaths[i].display(groupDx, groupDy);
+            }
+
+            // --- STAGES 0-3: LASER CONSTRUCTION ---
+            if (currentStage < 4) {
+                let remainingSpeed = baseLaserSpeed * speedMult;
+                
+                while (remainingSpeed > 0 && currentPath < stagePaths.length) {
+                    let p = stagePaths[currentPath];
+                    let pathDist = Math.max(p.len, 1.0); 
+                    let distNeeded = pathDist * (1.0 - laserProgress);
+                    
+                    if (remainingSpeed >= distNeeded) {
+                        remainingSpeed -= distNeeded;
+                        laserProgress = 0;
+                        currentPath++;
+                    } else {
+                        laserProgress += remainingSpeed / pathDist;
+                        remainingSpeed = 0;
+                    }
+                }
+                
+                // Draw Active Laser Head
+                if (currentPath < stagePaths.length) {
+                    let p = stagePaths[currentPath];
+                    p.displayPartial(groupDx, groupDy, laserProgress);
+                    
+                    let mapX1 = mapX(p.x1) + groupDx[p.group] * scale;
+                    let mapY1 = mapY(p.y1) + groupDy[p.group] * scale;
+                    let mapX2 = mapX(p.x2) + groupDx[p.group] * scale;
+                    let mapY2 = mapY(p.y2) + groupDy[p.group] * scale;
+                    
+                    let lx = lerp(mapX1, mapX2, laserProgress);
+                    let ly = lerp(mapY1, mapY2, laserProgress);
+                    
+                    hueValue = (hueValue + (8 * speedMult)) % 360;
+                    
+                    // Laser Glow Effects
+                    ctx.beginPath();
+                    ctx.fillStyle = `hsla(${hueValue}, 100%, 50%, 0.4)`;
+                    ctx.arc(lx, ly, 40 * (scale/3.0), 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.fillStyle = `hsla(${hueValue}, 100%, 50%, 0.8)`;
+                    ctx.arc(lx, ly, 20 * (scale/3.0), 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.fillStyle = 'rgba(255, 255, 255, 1.0)';
+                    ctx.arc(lx, ly, 6 * (scale/3.0), 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    // Construction Finished Prompt
+                    ctx.fillStyle = 'rgba(0, 229, 255, 0.8)';
+                    ctx.textAlign = 'center';
+                    ctx.font = `italic ${18 * (scale/3.0)}px sans-serif`;
+                    ctx.fillText("Construction Complete - Proceed to Next Screen", centerX, baseY + 60);
+                }
+            } 
+            // --- STAGE 4: ASSEMBLY, HATCHING & TABLE ---
+            else {
+                let effectiveSpeed = speedMult;
+
+                if (subState === 0) {
+                    // SubState 0: Assembly Animation
+                    assemblyProgress += 0.015 * effectiveSpeed; 
+                    if (assemblyProgress > 1.0) assemblyProgress = 1.0; 
+                    
+                    for(let i = 0; i < 5; i++) {
+                        groupDx[i] = lerp(startDx[i], 0, assemblyProgress);
+                        groupDy[i] = lerp(startDy[i], 0, assemblyProgress);
+                    }
+                    
+                    if (assemblyProgress >= 1.0) {
+                        subState = 1; // Move to hatching
+                    }
+                } 
+                else if (subState === 1) {
+                    // SubState 1: Hatching Animation
+                    let maxPaths = hatchPaths.length;
+                    let pathsToDraw = Math.min(Math.floor(hatchProgress * maxPaths), maxPaths);
+                    
+                    for(let i = 0; i < pathsToDraw; i++) {
+                        hatchPaths[i].display(groupDx, groupDy);
+                    }
+                    
+                    hatchProgress += 0.02 * effectiveSpeed; 
+                    
+                    if (hatchProgress >= 1.0) {
+                        hatchProgress = 1.0;
+                        subState = 2; // Move to annotations
+                    }
+                } 
+                else if (subState === 2) {
+                    // SubState 2: Fully Assembled + Annotations
+                    for(let i = 0; i < hatchPaths.length; i++) {
+                        hatchPaths[i].display(groupDx, groupDy);
+                    }
+                    drawAnnotations();
+                }
+            }
+
+            requestAnimationFrame(draw);
+        }
+
+        // --- DRAW ANNOTATIONS & TABLE (LAST SCREEN) ---
+        function drawAnnotations() {
+            let tW = Math.min(450, canvas.width * 0.4);
+            let tableX = canvas.width - tW - 20;
+            let tableY = 30;
+            
+            // Adjust for mobile screens
+            if (canvas.width < 800) {
+                tW = canvas.width - 40;
+                tableX = 20;
+                tableY = 20;
+            }
+
+            // Table Background
+            ctx.fillStyle = 'rgba(15, 15, 15, 0.9)';
+            ctx.strokeStyle = '#00e5ff';
+            ctx.lineWidth = 2;
+            ctx.fillRect(tableX, tableY, tW, 200);
+            ctx.strokeRect(tableX, tableY, tW, 200);
+            
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = '#FFFFFF';
+            
+            // Title
+            ctx.font = `bold ${tW * 0.05}px sans-serif`;
+            ctx.fillText("BILL OF MATERIALS", tableX + (tW * 0.25), tableY + 10);
+            
+            // Header Lines
+            ctx.beginPath();
+            ctx.moveTo(tableX, tableY + 35);
+            ctx.lineTo(tableX + tW, tableY + 35);
+            ctx.moveTo(tableX, tableY + 65);
+            ctx.lineTo(tableX + tW, tableY + 65);
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            
+            ctx.font = `bold ${tW * 0.035}px monospace`;
+            
+            // Columns
+            ctx.fillText("PART", tableX + 10, tableY + 45);
+            ctx.fillText("NAME", tableX + 70, tableY + 45);
+            ctx.fillText("MATERIAL", tableX + 180, tableY + 45);
+            ctx.fillText("QTY", tableX + tW - 40, tableY + 45);
+            
+            // Rows
+            ctx.font = `${tW * 0.035}px monospace`;
+            let yOffset = 80;
+            const rows = [
+                ["1", "BRASSES", "GUN METAL", "2"],
+                ["2", "BODY", "CAST IRON", "1"],
+                ["3", "CAP", "CAST IRON", "1"],
+                ["4", "BOLTS", "MILD STEEL", "2"]
+            ];
+
+            rows.forEach(row => {
+                ctx.fillText(row[0], tableX + 10, tableY + yOffset);
+                ctx.fillText(row[1], tableX + 70, tableY + yOffset);
+                ctx.fillText(row[2], tableX + 180, tableY + yOffset);
+                ctx.fillText(row[3], tableX + tW - 30, tableY + yOffset);
+                yOffset += 30;
+            });
+            
+            // Balloons (scaled to current view)
+            drawBalloon(mapX(24), mapY(70), mapX(100), mapY(120), "1"); 
+            drawBalloon(mapX(80), mapY(10), mapX(160), mapY(40), "2");  
+            drawBalloon(mapX(-30), mapY(80), mapX(-120), mapY(140), "3"); 
+            drawBalloon(mapX(-52), mapY(100), mapX(-120), mapY(180), "4");
+        }
+
+        function drawBalloon(startX, startY, endX, endY, num) {
+            ctx.strokeStyle = 'rgba(0, 229, 255, 0.9)'; // Cyan pointer
+            ctx.lineWidth = 1.5;
+            
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.fillStyle = '#111';
+            ctx.arc(endX, endY, 16 * (scale/3.0), 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            ctx.fillStyle = '#FFF';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = `bold ${14 * (scale/3.0)}px sans-serif`;
+            ctx.fillText(num, endX, endY);
+        }
+
+        // Initialize Application
+        setup();
+        requestAnimationFrame(draw);
+
+    </script>
+</body>
+</html>
