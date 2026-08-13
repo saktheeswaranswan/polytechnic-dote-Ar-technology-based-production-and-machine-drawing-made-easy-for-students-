@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Plummer Block Assembly Simulation</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050505;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        
+        /* UI Overlay Styles */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let clicks pass through where there are no buttons */
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .header {
+            padding: 20px;
+            text-align: center;
+            color: #00e5ff;
+            text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .header h2 {
+            margin: 5px 0 0 0;
+            font-size: 16px;
+            color: #fff;
+            font-weight: 400;
+        }
+
+        .controls-container {
+            display: flex;
+            justify-content: space-between;
+            padding: 20px 40px;
+            background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
+            pointer-events: auto;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .control-group-label {
+            color: #aaa;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-right: 5px;
+        }
+
+        button {
+            background-color: rgba(0, 229, 255, 0.1);
+            border: 1px solid #00e5ff;
+            color: #00e5ff;
+            padding: 10px 20px;
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            font-weight: bold;
+            box-shadow: 0 0 5px rgba(0, 229, 255, 0.2);
+        }
+
+        button:hover {
+            background-color: rgba(0, 229, 255, 0.3);
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.6);
+            color: #fff;
+        }
+
+        button.active {
+            background-color: #00e5ff;
+            color: #000;
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.8);
+        }
+
+        button:disabled {
+            border-color: #444;
+            color: #444;
+            background-color: transparent;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        #status-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #00ff88;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+            background: rgba(0,0,0,0.7);
+            padding: 15px 30px;
+            border-radius: 30px;
+            border: 1px solid #00ff88;
+            opacity: 0;
+            transition: opacity 0.5s;
+        }
+
+        @media (max-width: 768px) {
+            .controls-container {
+                justify-content: center;
+                padding: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="simCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div class="header">
+            <h1>Plummer Block Assembly</h1>
+            <h2 id="stage-title">Stage 1: Body Construction</h2>
+        </div>
+        
+        <div id="status-text">Stage Complete - Press Next</div>
+
+        <div class="controls-container">
+            <div class="control-group">
+                <span class="control-group-label">Speed:</span>
+                <button id="btn-05x" onclick="setSpeed(0.5)">0.5x</button>
+                <button id="btn-1x" class="active" onclick="setSpeed(1.0)">1x</button>
+                <button id="btn-2x" onclick="setSpeed(2.0)">2x</button>
+                <button id="btn-4x" onclick="setSpeed(4.0)">4x</button>
+            </div>
+            
+            <div class="control-group">
+                <button id="btn-prev" onclick="prevScreen()">&#9664; Previous</button>
+                <button id="btn-next" onclick="nextScreen()">Next &#9654;</button>
+                <button id="btn-reset" onclick="resetToBeginning()">&#8634; To Beginning</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- PLUMMER BLOCK ASSEMBLY SIMULATION ---
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status-text');
+        const stageTitle = document.getElementById('stage-title');
+
+        // Components arrays (0: Body, 1: Cap, 2: Brasses, 3: Bolt Left, 4: Bolt Right)
+        let components = [[], [], [], [], []];
+        let hatchPaths = [];
+
+        // Animation state variables
+        let currentScreen = 0; // 0=Body, 1=Cap, 2=Brasses, 3=BoltL, 4=BoltR, 5=Assemble, 6=Hatch+Table
+        let pathIndex = 0;
+        let laserProgress = 0;
+        let assemblyProgress = 0;
+        let hatchProgress = 0;
+        let hueValue = 0;
+
+        // Speed configurations
+        let speedMultiplier = 1.0;
+        const baseLaserSpeed = 100.0;
+        const baseAssemblySpeed = 0.015;
+        const baseHatchSpeed = 0.05;
+
+        // Component Groups offsets (for exploded view)
+        const startDx = [0, 0, 180, -150, 150]; 
+        const startDy = [0, -160, -90, -80, -80]; 
+        let groupDx = [...startDx];
+        let groupDy = [...startDy];
+
+        let scale, centerX, baseY;
+
+        const stageNames = [
+            "Stage 1: Cast Iron Body",
+            "Stage 2: Cast Iron Cap",
+            "Stage 3: Gun Metal Brasses",
+            "Stage 4: Left Bolt & Nuts",
+            "Stage 5: Right Bolt & Nuts",
+            "Stage 6: Component Assembly",
+            "Stage 7: Hatching & Bill of Materials"
+        ];
+
+        // --- PATH CLASS ---
+        class LinePath {
+            constructor(x1, y1, x2, y2, group, isHatch) {
+                this.x1 = x1; this.y1 = y1;
+                this.x2 = x2; this.y2 = y2;
+                this.group = group;
+                this.isHatch = isHatch;
+                
+                let mx1 = mapX(x1), my1 = mapY(y1);
+                let mx2 = mapX(x2), my2 = mapY(y2);
+                this.len = Math.hypot(mx2 - mx1, my2 - my1);
+            }
+
+            display(gx, gy) {
+                ctx.strokeStyle = this.isHatch ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 1.0)';
+                ctx.lineWidth = this.isHatch ? 1 : 2.5 * (scale / 3.0);
+                
+                let mx1 = mapX(this.x1) + gx[this.group] * scale;
+                let my1 = mapY(this.y1) + gy[this.group] * scale;
+                let mx2 = mapX(this.x2) + gx[this.group] * scale;
+                let my2 = mapY(this.y2) + gy[this.group] * scale;
+                
+                ctx.beginPath();
+                ctx.moveTo(mx1, my1);
+                ctx.lineTo(mx2, my2);
+                ctx.stroke();
+            }
+
+            displayPartial(gx, gy, t) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 1.0)';
+                ctx.lineWidth = 2.5 * (scale / 3.0);
+                
+                let mx1 = mapX(this.x1) + gx[this.group] * scale;
+                let my1 = mapY(this.y1) + gy[this.group] * scale;
+                let mx2 = mapX(this.x2) + gx[this.group] * scale;
+                let my2 = mapY(this.y2) + gy[this.group] * scale;
+                
+                let cx = mx1 + (mx2 - mx1) * t;
+                let cy = my1 + (my2 - my1) * t;
+                
+                ctx.beginPath();
+                ctx.moveTo(mx1, my1);
+                ctx.lineTo(cx, cy);
+                ctx.stroke();
+            }
+        }
+
+        // --- MATH & COORDINATE MAPPING ---
+        function mapX(x) { return centerX + (x * scale); }
+        function mapY(y) { return baseY - (y * scale); } 
+        function lerp(start, end, amt) { return (1 - amt) * start + amt * end; }
+
+        // --- GEOMETRY BUILDING ---
+        function addLine(x1, y1, x2, y2, group) {
+            components[group].push(new LinePath(x1, y1, x2, y2, group, false));
+        }
+
+        function addHatch(x1, y1, x2, y2) {
+            hatchPaths.push(new LinePath(x1, y1, x2, y2, 0, true)); 
+        }
+
+        function addSymLine(x1, y1, x2, y2, group) {
+            addLine(x1, y1, x2, y2, group);
+            addLine(-x1, y1, -x2, y2, group);
+        }
+
+        function addArc(cx, cy, r, startAng, endAng, group) {
+            let segments = 20; 
+            let angleStep = (endAng - startAng) / segments;
+            let px = cx + r * Math.cos(startAng);
+            let py = cy + r * Math.sin(startAng);
+            for (let i = 1; i <= segments; i++) {
+                let angle = startAng + i * angleStep;
+                let nx = cx + r * Math.cos(angle);
+                let ny = cy + r * Math.sin(angle);
+                addLine(px, py, nx, ny, group);
+                px = nx; py = ny;
+            }
+        }
+
+        function addSymArc(cx, cy, r, startAng, endAng, group) {
+            addArc(cx, cy, r, startAng, endAng, group);
+            let startAngM = Math.PI - endAng;
+            let endAngM = Math.PI - startAng;
+            addArc(cx, cy, r, startAngM, endAngM, group);
+        }
+
+        function buildGeometry() {
+            components = [[], [], [], [], []];
+            hatchPaths = [];
+            
+            // GROUP 0: BODY (Cast Iron)
+            addSymLine(-104, 0, 104, 0, 0); 
+            addSymLine(104, 0, 104, 14, 0);
+            addSymLine(104, 14, 59, 14, 0);
+            addSymLine(59, 14, 59, 68, 0);
+            addSymLine(59, 68, 33, 68, 0);
+            addSymLine(33, 68, 33, 52, 0);
+            addSymLine(33, 52, 24, 52, 0);
+            addSymArc(0, 48, 24, 0, Math.PI/2, 0); 
+            
+            addLine(-58, 0, -58, 14, 0);
+            addLine(-46, 0, -46, 14, 0);
+            addLine(46, 0, 46, 14, 0);
+            addLine(58, 0, 58, 14, 0);
+            
+            // GROUP 1: CAP (Cast Iron)
+            addArc(0, 48, 48, Math.PI, Math.PI * 2, 1); 
+            addArc(0, 48, 24, Math.PI, Math.PI * 2, 1); 
+            addSymLine(48, 48, 24, 48, 1); 
+            addSymLine(33, 48, 33, 58, 1); 
+            addSymLine(33, 58, 48, 58, 1);
+            
+            addLine(-58, 48, -58, 68, 1);
+            addLine(-46, 48, -46, 68, 1);
+            addLine(46, 48, 46, 68, 1);
+            addLine(58, 48, 58, 68, 1);
+
+            // GROUP 2: BRASSES (Gun Metal)
+            addArc(0, 48, 32, 0, Math.PI * 2, 2); 
+            addArc(0, 48, 24, 0, Math.PI * 2, 2); 
+            
+            // GROUP 3: BOLT & NUTS (LEFT)
+            addLine(-58, -5, -58, 95, 3);
+            addLine(-46, -5, -46, 95, 3);
+            addLine(-58, -5, -46, -5, 3);
+            addLine(-64, 95, -40, 95, 3); 
+            addLine(-64, 107, -40, 107, 3); 
+            addLine(-64, 95, -64, 107, 3);
+            addLine(-40, 95, -40, 107, 3);
+            
+            // GROUP 4: BOLT & NUTS (RIGHT)
+            addLine(46, -5, 46, 95, 4);
+            addLine(58, -5, 58, 95, 4);
+            addLine(46, -5, 58, -5, 4);
+            addLine(40, 95, 64, 95, 4);
+            addLine(40, 107, 64, 107, 4);
+            addLine(40, 95, 40, 107, 4);
+            addLine(64, 95, 64, 107, 4);
+            
+            // SECTION HATCHING 
+            for(let y = 0; y < 100; y += 4) {
+                if(y > 0 && y < 14) addHatch(0, y, 100, y+10);      
+                if(y > 14 && y < 48) addHatch(24, y, 59, y+10);     
+                if(y > 48 && y < 96) addHatch(24, y, 48, y-10);     
+            }
+        }
+
+        // --- SETUP & RESIZE ---
+        function setup() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // Safe scale for both mobile and desktop
+            let safeWidth = Math.min(canvas.width, 1000);
+            scale = safeWidth / 350.0; 
+            
+            // Align drawing properly
+            centerX = canvas.width / 2.0;
+            // Leave room at the top for table on small screens if on last step, but normally center
+            baseY = canvas.height * 0.65; 
+
+            buildGeometry();
+            
+            // Force redraw of trails on resize
+            ctx.fillStyle = '#050505';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        window.addEventListener('resize', setup);
+
+        // --- UI & NAVIGATION LOGIC ---
+        function updateUI() {
+            document.getElementById('btn-prev').disabled = (currentScreen === 0);
+            document.getElementById('btn-next').disabled = (currentScreen === 6);
+            stageTitle.innerText = stageNames[currentScreen];
+            statusText.style.opacity = '0'; // Hide complete msg on screen change
+        }
+
+        function setSpeed(s) {
+            speedMultiplier = s;
+            document.getElementById('btn-05x').classList.remove('active');
+            document.getElementById('btn-1x').classList.remove('active');
+            document.getElementById('btn-2x').classList.remove('active');
+            document.getElementById('btn-4x').classList.remove('active');
+            
+            if (s === 0.5) document.getElementById('btn-05x').classList.add('active');
+            if (s === 1.0) document.getElementById('btn-1x').classList.add('active');
+            if (s === 2.0) document.getElementById('btn-2x').classList.add('active');
+            if (s === 4.0) document.getElementById('btn-4x').classList.add('active');
+        }
+
+        function nextScreen() {
+            if (currentScreen < 6) {
+                applyScreenChange(currentScreen + 1);
+            }
+        }
+
+        function prevScreen() {
+            if (currentScreen > 0) {
+                applyScreenChange(currentScreen - 1);
+            }
+        }
+
+        function resetToBeginning() {
+            applyScreenChange(0);
+        }
+
+        function applyScreenChange(s) {
+            currentScreen = s;
+            pathIndex = 0;
+            laserProgress = 0;
+            assemblyProgress = 0;
+            hatchProgress = 0;
+
+            if (currentScreen <= 5) {
+                groupDx = [...startDx];
+                groupDy = [...startDy];
+            } else {
+                // If skipping directly to end
+                groupDx = [0,0,0,0,0];
+                groupDy = [0,0,0,0,0];
+                assemblyProgress = 1.0;
+            }
+
+            // Clear canvas trail
+            ctx.fillStyle = '#050505';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            updateUI();
+        }
+
+        // --- DRAWING LOOP ---
+        function draw() {
+            // Motion blur trail
+            ctx.fillStyle = 'rgba(5, 5, 5, 0.25)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 1. DRAW FULLY COMPLETED COMPONENTS FROM PREVIOUS SCREENS
+            for (let i = 0; i < currentScreen; i++) {
+                if (i <= 4) {
+                    for (let p of components[i]) p.display(groupDx, groupDy);
+                }
+            }
+            
+            let isCurrentScreenFinished = false;
+
+            // 2. HANDLE CURRENT SCREEN ANIMATION
+            if (currentScreen <= 4) {
+                let currentComp = components[currentScreen];
+                
+                // Draw completed paths of CURRENT screen
+                for (let i = 0; i < pathIndex; i++) {
+                    currentComp[i].display(groupDx, groupDy);
+                }
+
+                // Laser animation logic
+                let remainingSpeed = baseLaserSpeed * speedMultiplier;
+                
+                while (remainingSpeed > 0 && pathIndex < currentComp.length) {
+                    let p = currentComp[pathIndex];
+                    let pathDist = Math.max(p.len, 1.0); 
+                    let distNeeded = pathDist * (1.0 - laserProgress);
+                    
+                    if (remainingSpeed >= distNeeded) {
+                        remainingSpeed -= distNeeded;
+                        laserProgress = 0;
+                        pathIndex++;
+                    } else {
+                        laserProgress += remainingSpeed / pathDist;
+                        remainingSpeed = 0;
+                    }
+                }
+                
+                // Draw active laser head
+                if (pathIndex < currentComp.length) {
+                    let p = currentComp[pathIndex];
+                    p.displayPartial(groupDx, groupDy, laserProgress);
+                    
+                    let mapX1 = mapX(p.x1) + groupDx[p.group] * scale;
+                    let mapY1 = mapY(p.y1) + groupDy[p.group] * scale;
+                    let mapX2 = mapX(p.x2) + groupDx[p.group] * scale;
+                    let mapY2 = mapY(p.y2) + groupDy[p.group] * scale;
+                    
+                    let lx = lerp(mapX1, mapX2, laserProgress);
+                    let ly = lerp(mapY1, mapY2, laserProgress);
+                    
+                    hueValue = (hueValue + 6) % 360;
+                    
+                    ctx.beginPath();
+                    ctx.fillStyle = `hsla(${hueValue}, 100%, 50%, 0.4)`;
+                    ctx.arc(lx, ly, 30 * (scale/3.0), 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.fillStyle = `hsla(${hueValue}, 100%, 50%, 0.8)`;
+                    ctx.arc(lx, ly, 15 * (scale/3.0), 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.fillStyle = 'rgba(255, 255, 255, 1.0)';
+                    ctx.arc(lx, ly, 5 * (scale/3.0), 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    isCurrentScreenFinished = true;
+                }
+            }
+            else if (currentScreen === 5) {
+                // Assembly Screen
+                // all components already drawn by step 1
+                
+                assemblyProgress += baseAssemblySpeed * speedMultiplier;
+                if (assemblyProgress > 1.0) assemblyProgress = 1.0; 
+                
+                // Ease-out interpolation
+                let t = 1 - Math.pow(1 - assemblyProgress, 3);
+                
+                for(let i = 0; i < 5; i++) {
+                    groupDx[i] = lerp(startDx[i], 0, t);
+                    groupDy[i] = lerp(startDy[i], 0, t);
+                }
+                
+                if (assemblyProgress >= 1.0) {
+                    isCurrentScreenFinished = true;
+                }
+            }
+            else if (currentScreen === 6) {
+                // Final Screen: Hatching + Annotations
+                // components already drawn assembled
+
+                let maxPaths = hatchPaths.length;
+                let pathsToDraw = Math.min(Math.floor(hatchProgress * maxPaths), maxPaths);
+                
+                for(let i = 0; i < pathsToDraw; i++) {
+                    hatchPaths[i].display(groupDx, groupDy);
+                }
+                
+                if (hatchProgress < 1.0) {
+                    hatchProgress += baseHatchSpeed * speedMultiplier;
+                } else {
+                    hatchProgress = 1.0;
+                    drawAnnotations();
+                    isCurrentScreenFinished = true;
+                }
+            }
+
+            // Show 'Complete' message when stage is done
+            if (isCurrentScreenFinished && currentScreen < 6) {
+                statusText.style.opacity = '1';
+            } else {
+                statusText.style.opacity = '0';
+            }
+
+            requestAnimationFrame(draw);
+        }
+
+        // --- DRAW ANNOTATIONS (TABLE & BALLOONS) ---
+        function drawAnnotations() {
+            let tW = Math.min(450, canvas.width * 0.9);
+            let tableX = (canvas.width > 800) ? canvas.width - tW - 20 : (canvas.width - tW) / 2;
+            let tableY = (canvas.width > 800) ? 30 : 70;
+            
+            // Table Background
+            ctx.fillStyle = 'rgba(10, 15, 20, 0.85)';
+            ctx.strokeStyle = '#00e5ff';
+            ctx.lineWidth = 2;
+            ctx.fillRect(tableX, tableY, tW, 200);
+            ctx.strokeRect(tableX, tableY, tW, 200);
+            
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = '#00e5ff';
+            
+            // Title
+            ctx.font = `bold ${tW * 0.045}px sans-serif`;
+            ctx.fillText("BILL OF MATERIALS", tableX + (tW * 0.25), tableY + 12);
+            
+            // Lines
+            ctx.beginPath();
+            ctx.moveTo(tableX, tableY + 35);
+            ctx.lineTo(tableX + tW, tableY + 35);
+            ctx.moveTo(tableX, tableY + 65);
+            ctx.lineTo(tableX + tW, tableY + 65);
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `bold ${tW * 0.035}px monospace`;
+            
+            // Columns
+            ctx.fillText("PART", tableX + 10, tableY + 45);
+            ctx.fillText("NAME", tableX + 70, tableY + 45);
+            ctx.fillText("MATERIAL", tableX + 180, tableY + 45);
+            ctx.fillText("QTY", tableX + tW - 40, tableY + 45);
+            
+            // Rows
+            ctx.font = `${tW * 0.035}px monospace`;
+            let yOffset = 80;
+            const rows = [
+                ["1", "BRASSES", "GUN METAL", "2"],
+                ["2", "BODY", "CAST IRON", "1"],
+                ["3", "CAP", "CAST IRON", "1"],
+                ["4", "BOLTS", "MILD STEEL", "2"]
+            ];
+
+            rows.forEach(row => {
+                ctx.fillText(row[0], tableX + 10, tableY + yOffset);
+                ctx.fillText(row[1], tableX + 70, tableY + yOffset);
+                ctx.fillText(row[2], tableX + 180, tableY + yOffset);
+                ctx.fillText(row[3], tableX + tW - 30, tableY + yOffset);
+                yOffset += 30;
+            });
+            
+            // Tolerances Note (Bottom Left)
+            let noteX = 20;
+            let noteY = canvas.height - 120;
+            if (canvas.width <= 768) noteY = canvas.height - 180; // Push up if mobile UI overlaps
+            
+            ctx.fillStyle = '#00ff88';
+            ctx.font = `bold ${Math.min(16, tW * 0.04)}px sans-serif`;
+            ctx.fillText("FITS & TOLERANCES:", noteX, noteY);
+            
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `${Math.min(14, tW * 0.035)}px sans-serif`;
+            ctx.fillText("- Bearing Bore: Ø54 H7 / p6 (Interference Fit)", noteX, noteY + 25);
+            ctx.fillText("- Bolt Holes: Ø14 Clearance (H11)", noteX, noteY + 50);
+            ctx.fillText("- All undefined tolerances: ±0.5mm", noteX, noteY + 75);
+            
+            // Balloons pointing to assembled geometry (dx/dy = 0)
+            drawBalloon(mapX(15), mapY(70), mapX(100), mapY(130), "1"); // Brasses
+            drawBalloon(mapX(80), mapY(10), mapX(160), mapY(30), "2");  // Body
+            drawBalloon(mapX(-30), mapY(80), mapX(-140), mapY(140), "3"); // Cap
+            drawBalloon(mapX(-52), mapY(100), mapX(-120), mapY(190), "4"); // Bolt
+        }
+
+        function drawBalloon(startX, startY, endX, endY, num) {
+            ctx.strokeStyle = '#00e5ff';
+            ctx.lineWidth = 2;
+            
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.fillStyle = '#050505';
+            ctx.arc(endX, endY, 18 * (scale/3.0), 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            
+            ctx.fillStyle = '#FFFFFF';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = `bold ${14 * (scale/3.0)}px sans-serif`;
+            ctx.fillText(num, endX, endY);
+        }
+
+        // Initialize and Start
+        setup();
+        updateUI();
+        requestAnimationFrame(draw);
+
+    </script>
+</body>
+</html>
